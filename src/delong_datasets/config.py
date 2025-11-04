@@ -28,10 +28,10 @@ def _get_env_json(name: str, default: Optional[Dict[str, Any]] = None) -> Option
 
 
 # External service base URL for dataset API
-DS_API_BASE_URL: Optional[str] = os.getenv("DS_API_BASE_URL", "https://delong-datasets.avinasi.org")
+DS_API_BASE_URL: Optional[str] = os.getenv("DS_API_BASE_URL", "https://dlex.avinasi.ai")
 
 # Dataset decrypt endpoint (backend API: POST /api/datasets/decrypt)
-DS_DECRYPT_ENDPOINT: str = os.getenv("DS_DECRYPT_ENDPOINT", f"{DS_API_BASE_URL}/api/datasets/decrypt")
+DS_DECRYPT_ENDPOINT: str = os.getenv("DS_DECRYPT_ENDPOINT", f"{DS_API_BASE_URL}/api/tee/datasets/decrypt")
 
 # Timeouts and retries
 DS_TIMEOUT: int = _get_env_int("DS_TIMEOUT", 30)
