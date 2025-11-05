@@ -120,32 +120,25 @@ def request_attestation_cipher(token: str) -> Optional[str]:
     if not config.DS_ATTESTATION_ENDPOINT:
         return None
 
-    try:
-        # Build request to remote verification service
-        payload = json.dumps({"token": token}).encode("utf-8")
-        req = urllib.request.Request(
-            config.DS_ATTESTATION_ENDPOINT,
-            data=payload,
-            headers={"Content-Type": "application/json"},
-            method="POST",
-        )
+    # Build request to remote verification service
+    payload = json.dumps({"token": token}).encode("utf-8")
+    req = urllib.request.Request(
+        config.DS_ATTESTATION_ENDPOINT,
+        data=payload,
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
 
-        # Send request
-        with urllib.request.urlopen(req, timeout=config.DS_ATTESTATION_TIMEOUT) as resp:  # nosec - controlled endpoint
-            if resp.getcode() != 200:
-                return None
+    # Send request
+    with urllib.request.urlopen(req, timeout=config.DS_ATTESTATION_TIMEOUT) as resp:  # nosec - controlled endpoint
+        if resp.getcode() != 200:
+            return None
 
-            raw = resp.read().decode("utf-8")
-            try:
-                data = json.loads(raw)
-                # Remote service returns cipher in response
-                # Accept both {"cipher": "..."} and {"token": "..."} for compatibility
-                return data.get("cipher") or data.get("token")
-            except Exception:
-                return None
-
-    except Exception:
-        return None
+        raw = resp.read().decode("utf-8")
+        if isinstance(raw, str):
+            return raw
+        else:
+            raise ValueError(f"Invalid cipher: {raw}")
 
 
 def get_attestation_cipher() -> str:
@@ -168,11 +161,11 @@ def get_attestation_cipher() -> str:
         return _cached_cipher
 
     # Try to fetch local attestation token
-    local_token = fetch_local_attestation_token()
-    if not local_token:
-        # Not in TEE environment or socket not available
-        _cached_cipher = ""
-        return _cached_cipher
+    local_token = fetch_local_attestation_token() or ""
+    # if not local_token:
+    #     # Not in TEE environment or socket not available
+    #     _cached_cipher = ""
+    #     return _cached_cipher
 
     # Request cipher from remote verification service
     cipher = request_attestation_cipher(local_token)
