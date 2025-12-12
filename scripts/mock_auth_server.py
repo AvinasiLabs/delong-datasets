@@ -2,7 +2,9 @@
 """
 Mock server for delong-datasets backend API.
 
-Implements POST /api/datasets/decrypt endpoint matching the real backend.
+Implements:
+- POST /api/datasets/decrypt - Legacy endpoint
+- GET /api/tee/datasets/decrypt-stream - SSE streaming endpoint
 
 For testing purposes:
 - Empty runtime_key → returns sample data
@@ -10,10 +12,12 @@ For testing purposes:
 
 Real backend would verify the cipher cryptographically.
 """
+import json
 import os
-from typing import List, Optional
+from typing import Iterator, List, Optional
 
-from fastapi import Depends, FastAPI, Header, HTTPException
+from fastapi import Depends, FastAPI, Header, HTTPException, Query
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 
@@ -167,4 +171,86 @@ def decrypt_dataset(request: DecryptRequest, _token: str = Depends(_require_bear
     }
 
 
+def _generate_sse_events(
+    columns: List[str],
+    data: List[List],
+    chunk_size: int = 10,
+) -> Iterator[str]:
+    """Generate SSE events for streaming response."""
+    # Send metadata event
+    yield f"event: metadata\ndata: {json.dumps({'columns': columns})}\n\n"
+
+    # Send data in chunks
+    for i in range(0, len(data), chunk_size):
+        chunk = data[i : i + chunk_size]
+        # Convert rows to dicts
+        rows = [{col: row[idx] for idx, col in enumerate(columns)} for row in chunk]
+        yield f"event: chunk\ndata: {json.dumps({'rows': rows})}\n\n"
+
+    # Send done event
+    yield "event: done\ndata: {}\n\n"
+
+
+@app.get("/api/tee/datasets/decrypt-stream")
+def decrypt_stream(
+    dataset_id: str = Query(..., description="Dataset identifier"),
+    metadata_uri: str = Query(..., description="Metadata URI"),
+    columns: Optional[str] = Query(None, description="Comma-separated column names"),
+    offset: int = Query(0, description="Starting row offset"),
+    limit: Optional[int] = Query(None, description="Max rows to return"),
+    query: Optional[str] = Query(None, description="SQL query"),
+    authorization: Optional[str] = Header(None),
+):
+    """
+    SSE streaming endpoint for dataset decryption.
+
+    Returns Server-Sent Events with:
+    - metadata event: column names
+    - chunk events: rows of data
+    - done event: end of stream
+    """
+    # Validate token
+    if not authorization or not authorization.lower().startswith("bearer "):
+        raise HTTPException(status_code=401, detail="Authorization header required")
+    token = authorization.split(" ", 1)[1]
+    if token != REQUIRED_TOKEN:
+        raise HTTPException(status_code=401, detail="Invalid or expired token")
+
+    # Find dataset
+    if dataset_id not in MOCK_DATASETS:
+        raise HTTPException(status_code=404, detail=f"Dataset {dataset_id} not found")
+
+    dataset = MOCK_DATASETS[dataset_id]
+    all_columns = dataset["columns"]
+    all_data = dataset["data"]
+
+    # Apply column filtering
+    if columns:
+        col_list = [c.strip() for c in columns.split(",")]
+        try:
+            column_indices = [all_columns.index(col) for col in col_list]
+            filtered_data = [[row[i] for i in column_indices] for row in all_data]
+            filtered_columns = col_list
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=f"Invalid column name: {e}")
+    else:
+        filtered_data = all_data
+        filtered_columns = all_columns
+
+    # Apply pagination
+    start = offset
+    if limit is not None:
+        end = min(start + limit, len(filtered_data))
+    else:
+        end = len(filtered_data)
+    paginated_data = filtered_data[start:end]
+
+    return StreamingResponse(
+        _generate_sse_events(filtered_columns, paginated_data),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+        },
+    )
 
