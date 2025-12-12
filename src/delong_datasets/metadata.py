@@ -42,7 +42,10 @@ def decrypt_stream_iter(
     # Build URL with query parameters
     from urllib.parse import urlencode
 
-    params: Dict[str, Any] = {"dataset_id": dataset_id}
+    params: Dict[str, Any] = {
+        "dataset_id": dataset_id,
+        "metadata_uri": dataset_id,  # Use dataset_id as metadata_uri (required by backend)
+    }
     if query:
         params["query"] = query
     else:
@@ -90,19 +93,23 @@ def decrypt_stream_iter(
                     meta_columns = cols
                     return {"rows": [], "stop": False}
                 if ev == "chunk":
-                    if meta_columns is None:
-                        raise ParseError("Received chunk before metadata")
                     rows = payload.get("rows", [])
                     if not isinstance(rows, list):
                         raise ParseError("chunk.rows missing or invalid")
                     out_rows: List[Dict[str, Any]] = []
                     for row in rows:
-                        if not isinstance(row, list):
-                            raise ParseError("chunk.rows[] must be list")
-                        row_dict = {
-                            col: row[idx] if idx < len(row) else None
-                            for idx, col in enumerate(meta_columns)
-                        }
+                        # Support both dict format (new) and list format (legacy)
+                        if isinstance(row, dict):
+                            row_dict = row
+                        elif isinstance(row, list):
+                            if meta_columns is None:
+                                raise ParseError("Received list row before metadata with columns")
+                            row_dict = {
+                                col: row[idx] if idx < len(row) else None
+                                for idx, col in enumerate(meta_columns)
+                            }
+                        else:
+                            raise ParseError("chunk.rows[] must be dict or list")
                         if limit is None or yielded < limit:
                             out_rows.append(row_dict)
                             yielded += 1

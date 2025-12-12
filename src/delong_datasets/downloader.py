@@ -76,6 +76,15 @@ def load_dataset_from_api(
         query=query,
     ):
         rows.append(row)
+
+    # Convert all values to strings to avoid Arrow type inference issues
+    # (e.g., source_version can be 14.0 or "1.0.0")
+    if rows:
+        for row in rows:
+            for key in row:
+                if row[key] is not None:
+                    row[key] = str(row[key])
+
     return Dataset.from_list(rows)
 
 
