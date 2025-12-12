@@ -165,6 +165,7 @@ main() {
 
     # Set base config
     export DS_API_BASE_URL="http://127.0.0.1:3003"
+    export DS_DECRYPT_STREAM_ENDPOINT="http://127.0.0.1:3003/api/tee/datasets/decrypt-stream"
     export TOKEN="demo-token"
 
     # Run tests
