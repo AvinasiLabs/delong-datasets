@@ -3,9 +3,8 @@ Dataset conversion utilities.
 
 Converts backend API 2D array response format to datasets.Dataset objects.
 """
-from typing import Any, Dict, Iterator, List, Optional
+from typing import Any, Dict, List, Optional
 
-from . import config
 from .metadata import decrypt_stream_iter
 
 

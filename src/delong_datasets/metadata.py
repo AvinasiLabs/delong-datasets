@@ -8,7 +8,7 @@ import urllib.request
 from typing import Any, Dict, Iterator, List, Optional
 
 from . import config
-from .errors import AuthError, NetworkError, NotFoundError, RateLimitError, RemoteServerError, ParseError
+from .errors import AuthError, NetworkError, NotFoundError, ParseError, RateLimitError, RemoteServerError
 
 
 def decrypt_stream_iter(
