@@ -1,6 +1,5 @@
 """Command-line interface for delong_datasets."""
 import argparse
-import json
 import sys
 
 from .api import DownloadOptions, download_dataset, export_data

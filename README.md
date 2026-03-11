@@ -9,13 +9,12 @@ Python library for accessing sensitive life sciences datasets with TEE (Trusted 
 
 ## Overview
 
-**delong-datasets** extends HuggingFace's `datasets` library with enterprise-grade security features for sensitive data:
+**delong-datasets** provides a unified SSE (Server-Sent Events) streaming interface on top of HuggingFace `datasets`, supporting:
 
-- **🔒 TEE Security**: Automatic attestation-based access control
-- **🎯 Smart Degradation**: Sample data in dev environments, real data in secure TEE
-- **🚀 Zero-Trust Design**: Backend makes all authorization decisions
-- **📊 Flexible Access**: Column filtering, pagination, streaming support
-- **🛠️ Developer Friendly**: Familiar API, CLI tools, comprehensive examples
+- **📡 Unified SSE endpoint**: one endpoint for both raw data and SQL query results
+- **🧮 Server-side SQL (DuckDB)**: compute on the server, stream result sets only
+- **📊 Flexible access**: column filtering (`columns`), offset/limit, optional streaming iteration
+- **🧰 Developer-friendly**: `datasets`-compatible API, CLI, and examples
 
 ---
 
@@ -63,14 +62,10 @@ python -m delong_datasets download dataset-id --token $TOKEN
 
 ## Key Features
 
-### Automatic TEE Detection
-
-The library automatically detects whether it's running in a secure TEE environment:
-
-- **Development/Local**: Returns sample data for testing
-- **Secure TEE**: Returns real sensitive data after attestation
-
-No configuration needed - it just works!
+### Unified SSE + SQL
+Via the unified `GET /datasets/decrypt-stream` endpoint:
+- Without `query`: raw data is streamed via `metadata/chunk/done` events
+- With `query`: SQL is executed server-side (DuckDB) and only the result set is streamed
 
 ### Column Filtering
 
@@ -103,6 +98,18 @@ from delong_datasets import export_data
 # Export to CSV, JSON, or Parquet
 export_data(data, format="csv", path="/tmp/output.csv")
 export_data(data, format="parquet", path="/tmp/output.parquet")
+```
+
+### SQL Query
+Let the server perform aggregation/filtering to reduce network transfer:
+
+```python
+from delong_datasets import download_dataset, DownloadOptions
+
+opts = DownloadOptions(
+    query="SELECT sex, COUNT(*) AS count FROM data GROUP BY sex"
+)
+data = download_dataset("medical_imaging_2024", token, opts)
 ```
 
 ---
@@ -196,27 +203,8 @@ See the [examples directory](examples/) for more comprehensive examples.
 
 ---
 
-## Security Model
-
-### Zero-Trust Client Design
-
-The client library does **NOT** decide whether it's in a secure environment:
-
-1. **Client** fetches attestation credentials from local TEE service
-2. **Client** sends credentials to remote verification service
-3. **Client** forwards cipher to backend API
-4. **Backend** verifies cipher and decides: real data or sample data
-
-This prevents malicious clients from bypassing security controls.
-
-### Data Access Modes
-
-| Environment | Attestation | Data Returned | Use Case |
-|-------------|-------------|---------------|----------|
-| **Local** | Not available | Sample data | Development, testing |
-| **TEE** | Successful | Real data | Production analysis |
-
-See [Security Model](USER_GUIDE.md#security-model) for detailed information.
+## Access Control
+The backend uses JWT for authentication/authorization and streams data over SSE. Column filtering, pagination, and server-side SQL are supported. Operators can configure IP allowlists and ownership checks on the server. See the “SSE Data Access” section in the User Guide.
 
 ---
 
@@ -231,34 +219,6 @@ cd delong-datasets
 
 # Install in development mode
 pip install -e .
-```
-
----
-
-## Architecture
-
-```
-┌─────────────┐
-│   Client    │  • Fetches attestation credentials
-│   Library   │  • Forwards to backend
-└──────┬──────┘  • Does NOT make security decisions
-       │
-       ├─────────────────────────────────────────┐
-       │                                         │
-       ▼                                         ▼
-┌──────────────┐                        ┌─────────────┐
-│ TEE Attestor │                        │   Backend   │
-│ (Unix Socket)│                        │     API     │
-└──────┬───────┘                        └──────┬──────┘
-       │                                        │
-       │ Token                                  │
-       ▼                                        │
-┌──────────────────┐                            │
-│  Verification    │                            │
-│    Service       │────── Cipher ─────────────▶│
-└──────────────────┘                            │
-                                                │
-                          Decision: Real or Sample Data
 ```
 
 ---
@@ -286,6 +246,8 @@ export TOKEN="your-access-token"
 export DS_TIMEOUT=60
 export DS_MAX_RETRIES=5
 export DS_DEFAULT_LIMIT=5000
+# Endpoint (optional; otherwise derived from DS_API_BASE_URL)
+export DS_DECRYPT_STREAM_ENDPOINT="https://your-host/datasets/decrypt-stream"
 ```
 
 See [Configuration Guide](USER_GUIDE.md#configuration) for all options.

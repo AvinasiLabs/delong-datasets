@@ -22,23 +22,19 @@ Complete guide to using the delong-datasets library for secure life sciences dat
 ---
 
 ## Overview
+**delong-datasets** provides a unified SSE (Server-Sent Events) streaming interface compatible with HuggingFace `datasets`, and supports:
 
-**delong-datasets** is a Python library for accessing sensitive life sciences datasets with built-in security controls. It extends HuggingFace's `datasets` library with:
-
-- **TEE (Trusted Execution Environment) Support**: Automatic attestation-based access control
-- **Graceful Degradation**: Sample data in non-secure environments, real data in TEE
-- **Backend-Controlled Security**: Zero-trust client design where backend makes all authorization decisions
-- **Column Filtering**: Request only the data columns you need
-- **Pagination**: Efficient handling of large datasets
-- **Multiple Export Formats**: CSV, JSON, Parquet, and more
+- **Unified SSE endpoint**: single entry for raw data and SQL queries
+- **Server-side SQL (DuckDB)**: returns only result sets to minimize transfer
+- **Column filtering and pagination**: `columns`, `offset`, `limit`
+- **Multiple export formats**: CSV, JSON, Parquet, etc.
 
 ### Key Features
-
-✅ **Automatic Environment Detection**: No manual configuration needed
-✅ **Secure by Default**: Sample data returned outside TEE environments
-✅ **Familiar API**: Built on HuggingFace datasets library
-✅ **Flexible Access**: CLI and Python API
-✅ **Policy Enforcement**: Built-in data export limits
+✅ **Unified access**: SSE streaming interface  
+✅ **Server-side compute**: DuckDB executes SQL  
+✅ **Familiar API**: built on HuggingFace datasets  
+✅ **Flexible retrieval**: column filtering/pagination/streaming  
+✅ **Policy enforcement**: export row limits
 
 ---
 
@@ -113,41 +109,22 @@ python -m delong_datasets download medical_imaging_2024 \
 ---
 
 ## Core Concepts
+### 1. Unified SSE Interface
 
-### 1. TEE (Trusted Execution Environment)
+`GET /datasets/decrypt-stream` is the single entry point:
+- Without `query`: streams the full dataset in raw data mode
+- With `query`: executes SQL on the server (DuckDB) and streams only the results
 
-A **Trusted Execution Environment** is a secure area of a processor that guarantees code and data are protected with respect to confidentiality and integrity. The library automatically detects TEE environments through attestation.
+Events in the stream:
+- `metadata`: column info and chunking details
+- `chunk`: data rows as a 2D array; column order matches `metadata.columns`
+- `done`: completion marker
+- `error`: error details
 
-### 2. Attestation Flow
+### 2. Data Access Modes
 
-```
-┌─────────┐     ┌──────────────┐     ┌──────────────┐     ┌─────────┐
-│ Client  │────▶│ TEE Attestor │────▶│ Verification │────▶│ Backend │
-│ Library │     │ (Unix Socket)│     │   Service    │     │   API   │
-└─────────┘     └──────────────┘     └──────────────┘     └─────────┘
-                      Token                Cipher            Decision
-```
-
-1. **Client** requests attestation token from local TEE service
-2. **TEE Attestor** provides cryptographically signed token
-3. **Verification Service** validates token and returns encrypted cipher
-4. **Backend API** verifies cipher and grants access to real data
-
-### 3. Data Access Modes
-
-| Mode | Environment | Data Returned | Use Case |
-|------|-------------|---------------|----------|
-| **Local** | Non-TEE | Sample data | Development, testing, debugging |
-| **TEE** | Secure TEE | Real data | Production analysis on sensitive data |
-
-### 4. Zero-Trust Client
-
-The client library does **NOT** decide whether it's running in a secure environment. It only:
-- Fetches attestation credentials
-- Forwards them to the backend
-- **Backend makes all authorization decisions**
-
-This prevents malicious clients from bypassing security controls.
+- **Raw data stream**: returns the full dataset in chunks; good for downloads/local analysis
+- **SQL query mode**: returns only query results; ideal for aggregation, filtering, preview, and stats
 
 ---
 
@@ -174,7 +151,7 @@ from delong_datasets import download_dataset, DownloadOptions
 opts = DownloadOptions(
     columns=["patient_id", "diagnosis", "age"],  # Column filtering
     limit=1000,                                    # Row limit
-    stream=False                                   # Streaming mode
+    stream=False                                   # Streaming mode (False = materialize in-memory dataset)
 )
 
 data = download_dataset("demo-dataset-001", "your-token", opts)
@@ -214,7 +191,7 @@ print(df.groupby('diagnosis').size())
 
 ```python
 data = download_dataset("medical_imaging_2024", "your-token")
-table = data.to_pandas()  # Returns pyarrow.Table
+table = data.to_pandas()  # Returns pandas.DataFrame; for Arrow/Parquet use to_parquet or pandas+pyarrow
 ```
 
 #### Access as NumPy
@@ -363,21 +340,32 @@ combined_df = pd.concat([
 ], ignore_index=True)
 ```
 
+### SQL Query (server-side)
+
+Use `DownloadOptions.query` to execute SQL via DuckDB on the server; only results are streamed back:
+
+```python
+from delong_datasets import download_dataset, DownloadOptions
+
+opts = DownloadOptions(
+    query="SELECT sex, COUNT(*) AS cnt FROM data GROUP BY sex"
+)
+data = download_dataset("demo-dataset-001", "your-token", opts)
+```
+
 ---
 
 ## Configuration
 
 ### Environment Variables
 
-Configure the library using environment variables:
+Configure the library using these environment variables:
 
 | Variable | Description | 
 |----------|-------------|
-| `DS_ATTESTATION_ENDPOINT` | Remote attestation service URL |
-| `DS_ATTESTATION_SOCKET` | Local TEE attestor socket path |
-| `DS_ATTESTATION_AUDIENCE` | Attestation token audience |
-| `DS_ATTESTATION_TIMEOUT` | Attestation timeout (seconds) |
-| `DS_TIMEOUT` | API request timeout (seconds) |
+| `DS_API_BASE_URL` | Base API URL (used to derive defaults) |
+| `DS_DECRYPT_STREAM_ENDPOINT` | SSE endpoint (defaults to `DS_API_BASE_URL + /datasets/decrypt-stream`) |
+| `DS_TIMEOUT` | Request timeout (seconds) |
 | `DS_MAX_RETRIES` | Maximum retry attempts |
 | `DS_DEFAULT_LIMIT` | Default row limit |
 | `DS_MAX_LOCAL_EXPORT_ROWS` | Maximum rows for local export |
@@ -387,11 +375,13 @@ Configure the library using environment variables:
 Create a `.env` file in your project:
 
 ```bash
+# Performance
+export DS_TIMEOUT=60
+export DS_MAX_RETRIES=5
+export DS_DEFAULT_LIMIT=5000
 
-# Performance tuning
-DS_TIMEOUT=60
-DS_MAX_RETRIES=5
-DS_DEFAULT_LIMIT=5000
+# Endpoint (optional; derived from DS_API_BASE_URL if not set)
+export DS_DECRYPT_STREAM_ENDPOINT="https://your-host/datasets/decrypt-stream"
 ```
 
 Load with:
@@ -442,37 +432,8 @@ data = download_dataset("demo-dataset-001", "your-token", opts)
 - ❌ Authorized user exfiltrating data (insider threat)
 - ❌ Side-channel attacks
 
-### Zero-Trust Client Design
-
-The client library is intentionally "dumb":
-
-```python
-# Client DOES NOT verify environment
-# Client ONLY fetches and forwards credentials
-
-def get_attestation_cipher() -> str:
-    """
-    Fetch cipher from attestation flow.
-    Returns empty string if not in TEE.
-    """
-    token = fetch_from_unix_socket()      # Local attestation
-    if not token:
-        return ""                          # Not in TEE, return empty
-
-    cipher = verify_with_remote(token)    # Remote verification
-    return cipher or ""                   # Forward cipher to backend
-```
-
-**Backend verifies and decides:**
-
-```python
-# Backend code (conceptual)
-def decrypt_dataset(dataset_id: str, runtime_key: str):
-    if verify_cipher(runtime_key):
-        return get_real_data(dataset_id)   # TEE verified
-    else:
-        return get_sample_data(dataset_id) # Not in TEE
-```
+### Access Control
+Clients authenticate with JWT and access the unified SSE endpoint; the backend handles authorization and data return. Operators can configure IP allowlists and ownership checks on the server. For error semantics and event structure, see the “SSE Data Access” section above.
 
 ### Data Classification
 
@@ -531,9 +492,12 @@ def download_dataset(
 - `datasets.IterableDataset`: Streaming dataset (if `stream=True`)
 
 **Raises:**
-- `ValueError`: Invalid parameters
-- `requests.HTTPError`: API request failed
-- `PolicyViolationError`: Policy violation
+- `AuthError`: authentication/authorization failed
+- `NotFoundError`: dataset not found
+- `NetworkError`: network or server error
+- `RateLimitError`: rate limited
+- `RemoteServerError`: remote server error
+- `PolicyViolationError`: export policy violation
 
 **Example:**
 ```python
@@ -580,7 +544,8 @@ class DownloadOptions:
         max_retries: int = 3,
         columns: Optional[List[str]] = None,
         limit: Optional[int] = None,
-        offset: int = 0
+        offset: int = 0,
+        query: Optional[str] = None,   # Server-side SQL query
     )
 ```
 
@@ -591,6 +556,7 @@ class DownloadOptions:
 - `columns` (List[str]): Column filter (None = all columns)
 - `limit` (int): Maximum rows to download
 - `offset` (int): Starting row offset (for pagination)
+- `query` (str | None): SQL executed on the server (when provided, `columns` filter is ignored)
 
 **Example:**
 ```python
@@ -1006,6 +972,268 @@ If you use delong-datasets in your research, please consider citing both this li
 ```
 
 For the complete BibTeX entry, see [README.md](README.md#citation) or [CITATION.cff](CITATION.cff).
+
+---
+
+## SSE Data Access (Server-Sent Events)
+
+This SDK uses a unified SSE (Server-Sent Events) streaming interface for data access. It supports two modes via a single endpoint:
+
+- Raw data stream: no `query` parameter — returns the full dataset in chunks
+- SQL query mode: provide `query` — executed on the server (DuckDB), returning only the result set
+
+---
+
+### Endpoint
+
+```
+GET /datasets/decrypt-stream?dataset_id={id}[&query={sql}][&columns={cols}][&offset={n}][&limit={n}]
+```
+
+Authentication header:
+
+```
+Authorization: Bearer {jwt_token}
+```
+
+Query parameters:
+
+- `dataset_id` (string, required): Dataset ID
+- `query` (string, optional): SQL query. When provided, the server executes it via DuckDB on the dataset
+- `columns` (string, optional): Comma-separated column names (only applies in raw data mode)
+- `offset` (number, optional): Row offset (default 0)
+- `limit` (number, optional): Row limit
+
+---
+
+### SSE Events and Payloads
+
+Event types:
+
+- `metadata`: Dataset metadata including column names
+- `chunk`: Data chunk containing rows
+- `done`: Completion marker
+- `error`: Error message
+
+1) `metadata`
+
+Raw data mode example:
+
+```json
+{
+  "event": "metadata",
+  "columns": ["id", "name", "age", "sex"],
+  "total_chunks": 10,
+  "chunk_size": 10000,
+  "data_type": "csv"
+}
+```
+
+SQL query mode example:
+
+```json
+{
+  "event": "metadata",
+  "columns": ["sex", "count"],
+  "total_chunks": 1,
+  "chunk_size": 2,
+  "data_type": "query_result"
+}
+```
+
+2) `chunk`
+
+```json
+{
+  "event": "chunk",
+  "chunk_idx": 0,
+  "rows": [
+    ["1", "Alice", "30", "F"],
+    ["2", "Bob", "25", "M"],
+    ["3", "Charlie", "35", "M"]
+  ],
+  "row_count": 3
+}
+```
+
+Important: `rows` is a 2D array of row values; column order matches `metadata.columns`.
+
+3) `done`
+
+Raw data mode example:
+
+```json
+{
+  "event": "done",
+  "total_rows": 230516,
+  "total_chunks": 24
+}
+```
+
+SQL query mode adds:
+
+```json
+{
+  "event": "done",
+  "total_rows": 2,
+  "total_chunks": 1,
+  "execution_time_ms": 45,
+  "cache_hit": true
+}
+```
+
+4) `error`
+
+```json
+{
+  "event": "error",
+  "message": "User does not have access to dataset: 69"
+}
+```
+
+---
+
+### Full SSE Examples
+
+Raw data stream:
+
+```
+event: metadata
+data: {"event":"metadata","columns":["id","name","age","sex"],"total_chunks":3,"chunk_size":100000,"data_type":"csv"}
+
+event: chunk
+data: {"event":"chunk","chunk_idx":0,"rows":[["1","Alice","30","F"],["2","Bob","25","M"]],"row_count":2}
+
+event: chunk
+data: {"event":"chunk","chunk_idx":1,"rows":[["3","Charlie","35","M"]],"row_count":1}
+
+event: done
+data: {"event":"done","total_rows":3,"total_chunks":2}
+```
+
+SQL query:
+
+```
+event: metadata
+data: {"event":"metadata","columns":["sex","count"],"total_chunks":1,"chunk_size":2,"data_type":"query_result"}
+
+event: chunk
+data: {"event":"chunk","chunk_idx":0,"rows":[["M",150000],["F",80516]],"row_count":2}
+
+event: done
+data: {"event":"done","total_rows":2,"total_chunks":1,"execution_time_ms":45,"cache_hit":true}
+```
+
+---
+
+### Request Examples
+
+Raw data:
+
+```bash
+# Full dataset
+curl -N "http://localhost:20011/datasets/decrypt-stream?dataset_id=69" \
+  -H "Authorization: Bearer $JWT_TOKEN"
+
+# Specific columns + limit
+curl -N "http://localhost:20011/datasets/decrypt-stream?dataset_id=69&columns=name,age&limit=100" \
+  -H "Authorization: Bearer $JWT_TOKEN"
+```
+
+SQL query:
+
+```bash
+# Simple query
+curl -N "http://localhost:20011/datasets/decrypt-stream?dataset_id=69&query=SELECT%20*%20FROM%20data%20LIMIT%205" \
+  -H "Authorization: Bearer $JWT_TOKEN"
+
+# Aggregation
+curl -N "http://localhost:20011/datasets/decrypt-stream?dataset_id=69&query=SELECT%20COUNT(*)%20FROM%20data" \
+  -H "Authorization: Bearer $JWT_TOKEN"
+
+# Grouped stats
+curl -N "http://localhost:20011/datasets/decrypt-stream?dataset_id=69&query=SELECT%20sex,COUNT(*)%20FROM%20data%20GROUP%20BY%20sex" \
+  -H "Authorization: Bearer $JWT_TOKEN"
+```
+
+---
+
+### SQL Capabilities and Limits
+
+- Supported operations: SELECT with filter, aggregation, grouping, sorting, pagination
+  - Examples:
+    - `SELECT * FROM data WHERE age > 30`
+    - `SELECT COUNT(*), AVG(age) FROM data`
+    - `SELECT sex, COUNT(*) FROM data GROUP BY sex`
+    - `SELECT * FROM data ORDER BY age DESC`
+    - `SELECT * FROM data LIMIT 100 OFFSET 200`
+- Restrictions:
+  - Only `SELECT` queries are allowed
+  - Mutating statements (`INSERT/UPDATE/DELETE/DROP`) are disallowed
+  - Table name is fixed to `data`
+
+---
+
+### Usage Recommendations
+
+- Small datasets (< 10MB): SQL — `SELECT * FROM data`
+- Large-scale analysis: SQL — `SELECT ... GROUP BY ...`
+- Full large dataset download: Raw data stream (no `query`)
+- Preview: SQL — `SELECT * FROM data LIMIT 100`
+- Counting: SQL — `SELECT COUNT(*) FROM data`
+
+---
+
+### Access Control (Server Configuration)
+
+Environment variables (example for local/dev):
+
+```bash
+# IP allowlist (comma-separated; IPv4/IPv6/CIDR supported)
+ALLOWED_DECRYPT_IPS=127.0.0.1,::1,10.124.0.0/16,172.21.0.0/16
+
+# Trust X-Forwarded-For (true for local dev and managed ingress)
+TRUST_PROXY=true
+
+# Ownership check (allow dataset owner direct access in dev)
+ENABLE_OWNERSHIP_CHECK=true
+```
+
+Allowlist formats:
+
+- Single IPv4: `192.168.1.100`
+- Single IPv6: `::1`
+- CIDR: `10.124.0.0/16`
+
+Security note: Do not set `TRUST_PROXY=true` unless behind a trusted reverse proxy, otherwise clients could spoof IPs.
+
+Ownership check modes:
+
+- `ENABLE_OWNERSHIP_CHECK=true`: dataset owner (`project_address == wallet`) can access directly
+- `ENABLE_OWNERSHIP_CHECK=false`: only contract-based access (`hasValidAccess`) is used
+
+---
+
+### Error Handling
+
+HTTP status codes:
+
+- 401: Authentication failed (invalid or expired JWT)
+- 403: No permission or IP not in allowlist
+- 404: Dataset not found
+- 400: Bad request or SQL syntax error
+- 500: Internal server error
+
+SSE `error` event contains a descriptive message.
+
+---
+
+### Performance Characteristics
+
+- Parquet caching: First query caches data as Parquet; subsequent queries are faster
+- DuckDB on server: SQL executed server-side; only results are streamed
+- SSE streaming: Low memory footprint; supports large datasets
+- Cache hit indicator: `cache_hit: true` in `done` event
 
 ---
 

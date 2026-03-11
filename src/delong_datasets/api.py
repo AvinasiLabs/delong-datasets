@@ -20,6 +20,7 @@ class DownloadOptions:
         columns: Optional[List[str]] = None,
         limit: Optional[int] = None,
         offset: int = 0,
+        query: Optional[str] = None,
     ) -> None:
         """
         Initialize download options.
@@ -31,6 +32,7 @@ class DownloadOptions:
             columns: Optional list of column names to fetch
             limit: Optional maximum number of rows to fetch
             offset: Starting row offset for pagination (default 0)
+            query: Optional SQL query string (enables server-side DuckDB execution)
         """
         self.stream = stream
         self.timeout_sec = timeout_sec
@@ -38,6 +40,7 @@ class DownloadOptions:
         self.columns = columns
         self.limit = limit
         self.offset = offset
+        self.query = query
 
 
 def download_dataset(dataset_id: str, token: str, options: Optional[DownloadOptions] = None):
@@ -79,6 +82,7 @@ def download_dataset(dataset_id: str, token: str, options: Optional[DownloadOpti
         streaming=opts.stream,
         limit=opts.limit,
         offset=opts.offset,
+        query=opts.query,
     )
 
 

@@ -3,10 +3,9 @@ Dataset conversion utilities.
 
 Converts backend API 2D array response format to datasets.Dataset objects.
 """
-from typing import Any, Dict, Iterator, List, Optional
+from typing import Any, Dict, List, Optional
 
-from . import config
-from .metadata import decrypt_dataset
+from .metadata import decrypt_stream_iter
 
 
 def response_to_dict_list(response: Dict[str, Any]) -> List[Dict[str, Any]]:
@@ -24,67 +23,27 @@ def response_to_dict_list(response: Dict[str, Any]) -> List[Dict[str, Any]]:
     return [{col: row[i] for i, col in enumerate(columns)} for row in data]
 
 
-def fetch_all_pages(
-    dataset_id: str,
-    token: str,
-    *,
-    columns: Optional[List[str]] = None,
-    page_size: int = 1000,
-    start_offset: int = 0,
-) -> Iterator[Dict[str, Any]]:
-    """
-    Fetch all pages from backend and yield rows as dictionaries.
-
-    Args:
-        dataset_id: Dataset identifier
-        token: JWT bearer token
-        columns: Optional column filter
-        page_size: Rows per page
-        start_offset: Starting offset for pagination
-
-    Yields:
-        Dict representing each row
-    """
-    offset = start_offset
-    has_more = True
-
-    while has_more:
-        response = decrypt_dataset(
-            dataset_id,
-            token,
-            columns=columns,
-            offset=offset,
-            limit=page_size,
-        )
-
-        # Convert and yield rows
-        for row_dict in response_to_dict_list(response):
-            yield row_dict
-
-        # Update pagination
-        offset += response["row_count"]
-        has_more = response["has_more"]
-
-
 def load_dataset_from_api(
     dataset_id: str,
     token: str,
     *,
     columns: Optional[List[str]] = None,
-    streaming: bool = False,
+    streaming: bool = True,
     limit: Optional[int] = None,
     offset: int = 0,
+    query: Optional[str] = None,
 ):
     """
-    Load dataset from backend API and return as datasets.Dataset or IterableDataset.
+    Load dataset via SSE stream and return as datasets.Dataset or IterableDataset.
 
     Args:
         dataset_id: Dataset identifier
         token: JWT bearer token
         columns: Optional list of columns to fetch
-        streaming: If True, return IterableDataset; if False, fetch all and return Dataset
-        limit: Maximum number of rows to fetch (default: fetch all)
+        streaming: If True, return IterableDataset; else return in-memory Dataset
+        limit: Optional maximum number of rows to fetch (default: fetch all)
         offset: Starting row offset for pagination (default: 0)
+        query: Optional SQL query string; when provided, columns filter is ignored by server
 
     Returns:
         datasets.Dataset or datasets.IterableDataset
@@ -92,22 +51,39 @@ def load_dataset_from_api(
     from datasets import Dataset, IterableDataset
 
     if streaming:
-        # Return iterable dataset that lazily fetches pages
         def gen():
-            for row in fetch_all_pages(dataset_id, token, columns=columns, page_size=config.DS_DEFAULT_LIMIT, start_offset=offset):
+            for row in decrypt_stream_iter(
+                dataset_id,
+                token,
+                columns=columns,
+                offset=offset,
+                limit=limit,
+                query=query,
+            ):
                 yield row
 
         return IterableDataset.from_generator(gen)
 
-    # Non-streaming: fetch all pages into memory
-    all_rows: List[Dict[str, Any]] = []
-    page_size = limit if limit and limit < config.DS_DEFAULT_LIMIT else config.DS_DEFAULT_LIMIT
+    # Non-streaming: collect all into memory
+    rows: List[Dict[str, Any]] = []
+    for row in decrypt_stream_iter(
+        dataset_id,
+        token,
+        columns=columns,
+        offset=offset,
+        limit=limit,
+        query=query,
+    ):
+        rows.append(row)
 
-    for row in fetch_all_pages(dataset_id, token, columns=columns, page_size=page_size, start_offset=offset):
-        all_rows.append(row)
-        if limit and len(all_rows) >= limit:
-            break
+    # Convert all values to strings to avoid Arrow type inference issues
+    # (e.g., source_version can be 14.0 or "1.0.0")
+    if rows:
+        for row in rows:
+            for key in row:
+                if row[key] is not None:
+                    row[key] = str(row[key])
 
-    return Dataset.from_list(all_rows)
+    return Dataset.from_list(rows)
 
 
